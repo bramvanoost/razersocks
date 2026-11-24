@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that the tag matches the source version
+        run: |
+          version=$(make -s version)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::Tag $TAG does not match CLI.version $version"
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Test
+        run: make test
+
+      - name: Build universal archive
+        run: make dist
+
+      - name: Render Homebrew formula
+        run: |
+          sha=$(cut -d' ' -f1 "dist/razersocks-$VERSION-macos-universal.tar.gz.sha256")
+          ./scripts/render-formula.sh "$VERSION" "$sha" "$GITHUB_REPOSITORY" > dist/razersocks.rb
+          ruby -c dist/razersocks.rb
+
+      - name: Create GitHub release
+        run: |
+          gh release create "$TAG" --title "$TAG" --generate-notes \
+            "dist/razersocks-$VERSION-macos-universal.tar.gz" \
+            "dist/razersocks-$VERSION-macos-universal.tar.gz.sha256" \
+            dist/razersocks.rb
+
+      # Optional: set the HOMEBREW_TAP_TOKEN secret (a token with write access to
+      # <owner>/homebrew-tap) to publish the formula automatically.
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN not set. Copy razersocks.rb from the release into the tap."
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/$GITHUB_REPOSITORY_OWNER/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp dist/razersocks.rb tap/Formula/razersocks.rb
+          cd tap
+          git add Formula/razersocks.rb
+          git diff --cached --quiet && exit 0
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "razersocks $VERSION"
+          git push
