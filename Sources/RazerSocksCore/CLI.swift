@@ -41,6 +41,8 @@ public enum CLI {
         public var stdout: String
         public var stderr: String
         public var exitCode: Int32
+        /// Drawings to show in place, one after the other, before `stdout`.
+        public var frames: [String] = []
 
         public init(stdout: String = "", stderr: String = "", exitCode: Int32) {
             self.stdout = stdout
@@ -79,16 +81,43 @@ public enum CLI {
 
     // MARK: Formatting
 
-    public static func render(_ statuses: [BatteryStatus], options: Options) -> String {
+    public static func render(_ statuses: [BatteryStatus], options: Options, color: Bool = false) -> String {
         let items = statuses.map { status -> String in
             switch options.format {
-            case .human: return "\(status.device.shortName): \(status.percentage)% (\(status.charging ? "charging" : "discharging"))"
+            case .human: return battery(status, color: color)
             case .raw: return String(status.percentage)
             case .json: return json(status)
             }
         }
         if options.format == .json && options.all { return "[" + items.joined(separator: ",") + "]" }
-        return items.joined(separator: "\n")
+        return items.joined(separator: options.format == .human ? "\n\n" : "\n")
+    }
+
+    private static func battery(_ status: BatteryStatus, color: Bool) -> String {
+        let width = 20
+        // Rounds down so only 100% looks full, but never draws a live battery empty.
+        let filled = status.percentage == 0 ? 0 : max(1, status.percentage * width / 100)
+        let line = String(repeating: "─", count: width)
+        let cells = String(repeating: "█", count: filled) + String(repeating: " ", count: width - filled)
+        let code = status.percentage > 30 ? 32 : status.percentage > 10 ? 33 : 31 // green, yellow, red
+        func paint(_ text: String) -> String { color ? "\u{1B}[\(code)m\(text)\u{1B}[0m" : text }
+        return """
+            \(paint("╭\(line)╮"))
+            \(paint("│\(cells)├▌")) \(status.percentage)%
+            \(paint("╰\(line)╯"))
+            \(status.device.shortName) (\(status.charging ? "charging" : "discharging"))
+            """
+    }
+
+    /// The same drawing, filling up from empty.
+    private static func frames(_ statuses: [BatteryStatus], options: Options, color: Bool) -> [String] {
+        let count = 20
+        return (0..<count).map { step in
+            let partial = statuses.map {
+                BatteryStatus(device: $0.device, percentage: $0.percentage * step / count, charging: $0.charging)
+            }
+            return render(partial, options: options, color: color) + "\n"
+        }
     }
 
     /// Written by hand to keep the key order stable.
@@ -108,13 +137,14 @@ public enum CLI {
 
     // MARK: Running
 
-    public static func run(_ options: Options, devices: [ConnectedDevice], reader: BatteryReader) -> Outcome {
+    public static func run(_ options: Options, devices: [ConnectedDevice], reader: BatteryReader,
+                           color: Bool = false, animate: Bool = false) -> Outcome {
         guard !devices.isEmpty else {
             return Outcome(stderr: "razersocks: no supported Razer device found\n", exitCode: 1)
         }
 
         var statuses: [BatteryStatus] = []
-        var problems = ""
+        var problems: [(device: DeviceInfo, silent: Bool, message: String)] = []
         var permissionDenied = false
 
         for device in devices {
@@ -124,20 +154,28 @@ public enum CLI {
                 statuses.append(status)
             case .permissionDenied:
                 permissionDenied = true
-                problems += "razersocks: \(label): Input Monitoring permission denied\n"
+                problems.append((device.info, false, "razersocks: \(label): Input Monitoring permission denied\n"))
             case .unreachable:
-                problems += "razersocks: \(label): asleep, unreachable or busy (move the mouse and try again)\n"
+                problems.append((device.info, true, "razersocks: \(label): asleep, unreachable or busy (move the mouse and try again)\n"))
             }
             if !options.all && !statuses.isEmpty { break }
         }
 
-        if permissionDenied && statuses.isEmpty { problems += permissionHelp }
         guard !statuses.isEmpty else {
-            return Outcome(stderr: problems, exitCode: permissionDenied ? 3 : 2)
+            return Outcome(stderr: problems.map(\.message).joined() + (permissionDenied ? permissionHelp : ""),
+                           exitCode: permissionDenied ? 3 : 2)
         }
-        return Outcome(stdout: render(statuses, options: options) + "\n",
-                       stderr: options.all ? problems : "",
-                       exitCode: 0)
+
+        // A mouse on its cable leaves its dongle without anything to talk to.
+        let cabled = statuses.map(\.device).filter { $0.connection == .wired }.map(\.name)
+        let reported = problems.filter { !($0.silent && $0.device.connection == .wireless && cabled.contains($0.device.name)) }
+        var outcome = Outcome(stdout: render(statuses, options: options, color: color) + "\n",
+                              stderr: options.all ? reported.map(\.message).joined() : "",
+                              exitCode: 0)
+        if animate && options.format == .human {
+            outcome.frames = frames(statuses, options: options, color: color)
+        }
+        return outcome
     }
 
     private static let permissionHelp = """

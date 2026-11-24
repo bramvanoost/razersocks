@@ -5,7 +5,10 @@ One small native binary, no dependencies, no background process.
 
 ```console
 $ razersocks
-Viper V3 Pro: 84% (discharging)
+╭────────────────────╮
+│████████████████    ├▌ 84%
+╰────────────────────╯
+Viper V3 Pro (discharging)
 ```
 
 Not affiliated with Razer Inc.
@@ -40,10 +43,10 @@ macOS treats mice as input devices, so the app that runs `razersocks` needs Inpu
 
 | Option | Output |
 |---|---|
-| none | `Viper V3 Pro: 84% (discharging)` |
+| none | The battery drawing above |
 | `-q`, `--quiet`, `--raw` | `84` |
 | `-j`, `--json` | `{"device":"Razer Viper V3 Pro","pid":"0x00c1","battery":84,"charging":false,"connection":"wireless"}` |
-| `-a`, `--all` | Every connected supported device, one per line (an array with `--json`) |
+| `-a`, `--all` | Every connected supported device (an array with `--json`) |
 | `-v`, `--version` | Version |
 | `-h`, `--help` | Help |
 
@@ -56,6 +59,8 @@ macOS treats mice as input devices, so the app that runs `razersocks` needs Inpu
 | 64 | Invalid usage |
 
 Errors go to stderr, so stdout stays empty on failure.
+
+In a terminal the battery fills up in green, yellow (30% or less) or red (10% or less). Piped output has no color or animation. Set `NO_COLOR` to turn the color off.
 
 ### tmux
 

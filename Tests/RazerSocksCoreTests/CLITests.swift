@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import RazerSocksCore
 
@@ -43,9 +44,57 @@ final class CLITests: XCTestCase {
 
     // MARK: Formatting
 
-    func testHumanOutput() {
-        XCTAssertEqual(CLI.render([discharging], options: options(.human)), "Viper V3 Pro: 84% (discharging)")
-        XCTAssertEqual(CLI.render([charging], options: options(.human)), "Viper V3 Pro: 100% (charging)")
+    func testHumanOutputDrawsABattery() {
+        XCTAssertEqual(CLI.render([discharging], options: options(.human)), """
+            ╭────────────────────╮
+            │████████████████    ├▌ 84%
+            ╰────────────────────╯
+            Viper V3 Pro (discharging)
+            """)
+    }
+
+    func testChargingIsNamed() {
+        XCTAssertTrue(CLI.render([charging], options: options(.human)).hasSuffix("Viper V3 Pro (charging)"))
+    }
+
+    private func drawing(_ percentage: Int, color: Bool = false) -> String {
+        CLI.render([BatteryStatus(device: .wireless, percentage: percentage, charging: false)],
+                   options: options(.human), color: color)
+    }
+
+    func testBatteryFill() {
+        func cells(_ percentage: Int) -> Int { drawing(percentage).filter { $0 == "█" }.count }
+        XCTAssertEqual(cells(0), 0)
+        XCTAssertEqual(cells(1), 1, "a nearly empty battery is not drawn empty")
+        XCTAssertEqual(cells(50), 10)
+        XCTAssertEqual(cells(99), 19, "only 100% is drawn full")
+        XCTAssertEqual(cells(100), 20)
+    }
+
+    func testColorFollowsTheLevel() {
+        let green = "\u{1B}[32m", yellow = "\u{1B}[33m", red = "\u{1B}[31m"
+        for (percentage, code) in [(100, green), (31, green), (30, yellow), (11, yellow), (10, red), (0, red)] {
+            XCTAssertTrue(drawing(percentage, color: true).contains(code), "\(percentage)%")
+        }
+    }
+
+    func testColorIsResetAndOtherwiseChangesNothing() {
+        let colored = drawing(84, color: true)
+        XCTAssertEqual(colored.components(separatedBy: "\u{1B}[32m").count, colored.components(separatedBy: "\u{1B}[0m").count)
+        XCTAssertEqual(colored.replacingOccurrences(of: "\u{1B}[32m", with: "").replacingOccurrences(of: "\u{1B}[0m", with: ""),
+                       drawing(84))
+    }
+
+    func testRawAndJSONAreNeverColored() {
+        for format in [CLI.Format.raw, .json] {
+            XCTAssertFalse(CLI.render([discharging], options: options(format), color: true).contains("\u{1B}"))
+        }
+    }
+
+    func testAllSeparatesBatteriesWithABlankLine() {
+        let both = CLI.render([charging, discharging], options: options(.human, all: true))
+        XCTAssertEqual(both, CLI.render([charging], options: options(.human)) + "\n\n"
+            + CLI.render([discharging], options: options(.human)))
     }
 
     func testRawOutput() { XCTAssertEqual(CLI.render([discharging], options: options(.raw)), "84") }
@@ -91,10 +140,56 @@ final class CLITests: XCTestCase {
     }
 
     func testAllShowsEveryReachableDeviceAndReportsTheRest() {
-        let outcome = run(options(.raw, all: true), [working(.wired, 255), asleep])
+        let other = DeviceInfo(productID: 0xABCD, name: "Razer Other", connection: .wired, transactionID: 0x1F)
+        let outcome = run(options(.raw, all: true), [working(other, 255), asleep])
         XCTAssertEqual(outcome.stdout, "100\n")
         XCTAssertTrue(outcome.stderr.contains("Viper V3 Pro (wireless)"), outcome.stderr)
         XCTAssertEqual(outcome.exitCode, 0)
+    }
+
+    func testAllIgnoresSilentDongleWhenSameModelAnswersOverCable() {
+        let expected = CLI.Outcome(stdout: "100\n", stderr: "", exitCode: 0)
+        XCTAssertEqual(run(options(.raw, all: true), [working(.wired, 255), asleep]), expected)
+        XCTAssertEqual(run(options(.raw, all: true), [asleep, working(.wired, 255)]), expected)
+    }
+
+    func testAllStillReportsSilentDongleWhenSameModelAnswersOverAnotherDongle() {
+        let outcome = run(options(.raw, all: true), [working(.wireless, 255), asleep])
+        XCTAssertTrue(outcome.stderr.contains("Viper V3 Pro (wireless)"), outcome.stderr)
+    }
+
+    func testAllStillReportsPermissionDeniedDongleWhenSameModelAnswersOverCable() {
+        let outcome = run(options(.raw, all: true), [working(.wired, 255), locked])
+        XCTAssertTrue(outcome.stderr.contains("permission denied"), outcome.stderr)
+    }
+
+    private func animated(_ format: CLI.Format, _ devices: [ConnectedDevice]) -> CLI.Outcome {
+        CLI.run(options(format), devices: devices, reader: BatteryReader(pause: {}), animate: true)
+    }
+
+    func testAnimationFillsUpToTheRealLevel() {
+        let outcome = animated(.human, [working(.wireless, 214)])
+        let fills = outcome.frames.map { $0.filter { $0 == "█" }.count }
+        XCTAssertEqual(fills.first, 0)
+        XCTAssertEqual(fills, fills.sorted())
+        XCTAssertEqual(fills.count, 20)
+        XCTAssertLessThanOrEqual(fills.last ?? 99, 16)
+        XCTAssertTrue(outcome.stdout.contains("84%"), outcome.stdout)
+    }
+
+    func testFramesHaveAsManyLinesAsTheFinalDrawing() {
+        let outcome = animated(.human, [working(.wireless, 214)])
+        XCTAssertFalse(outcome.frames.isEmpty)
+        for frame in outcome.frames {
+            XCTAssertEqual(frame.filter { $0 == "\n" }.count, outcome.stdout.filter { $0 == "\n" }.count)
+        }
+    }
+
+    func testOnlyTheDrawingIsAnimated() {
+        XCTAssertEqual(animated(.raw, [working(.wireless, 214)]).frames, [])
+        XCTAssertEqual(animated(.json, [working(.wireless, 214)]).frames, [])
+        XCTAssertEqual(animated(.human, [asleep]).frames, [])
+        XCTAssertEqual(run(options(.human), [working(.wireless, 214)]).frames, [])
     }
 
     func testNoDeviceExitsOne() {
