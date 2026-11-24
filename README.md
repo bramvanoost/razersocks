@@ -34,8 +34,8 @@ Runs on macOS 12 or later, Apple Silicon and Intel.
 macOS treats mice as input devices, so the app that runs `razersocks` needs Input Monitoring:
 
 1. Open **System Settings > Privacy & Security > Input Monitoring**.
-2. Enable your terminal. For a status bar, enable that app (for example SketchyBar) instead.
-3. Restart that app.
+2. Enable your terminal. Not listed? Click **+** and add it. For a status bar, enable that app (for example SketchyBar) instead.
+3. Quit that app fully (Cmd+Q) and reopen it. Closing the window is not enough.
 
 `razersocks` only sends battery queries. It does not read movement, clicks or keys.
 
